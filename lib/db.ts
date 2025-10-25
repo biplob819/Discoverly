@@ -1,17 +1,39 @@
 import { neon, NeonQueryFunction } from '@neondatabase/serverless';
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL environment variable is not set');
+// Create a lazy-initialized SQL connection to avoid build-time errors
+let _sql: NeonQueryFunction<false, false> | null = null;
+
+function getSql(): NeonQueryFunction<false, false> {
+  if (!_sql) {
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL environment variable is not set');
+    }
+    _sql = neon(process.env.DATABASE_URL);
+  }
+  return _sql;
 }
 
-export const sql: NeonQueryFunction<false, false> = neon(process.env.DATABASE_URL);
+// Overloaded sql function that handles both template literals and strings
+export function sql(strings: TemplateStringsArray, ...values: any[]): any;
+export function sql(query: string, params?: any[]): any;
+export function sql(stringsOrQuery: TemplateStringsArray | string, ...values: any[]): any {
+  const db = getSql();
+  
+  if (typeof stringsOrQuery === 'string') {
+    // Handle regular string queries
+    return db(stringsOrQuery, values[0] || []);
+  } else {
+    // Handle template literal queries
+    return db(stringsOrQuery, ...values);
+  }
+}
 
 // Query helper function for compatibility with pg-style queries
 // Neon serverless returns rows as an array directly
 // We wrap it to match the standard pg interface { rows: [] }
 export async function query(text: string, params: any[] = []) {
   try {
-    const rows = await sql(text, params);
+    const rows = await getSql()(text, params);
     return { rows };
   } catch (error) {
     console.error('Database query error:', error);

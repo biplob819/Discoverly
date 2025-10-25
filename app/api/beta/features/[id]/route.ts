@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query } from '@/lib/db';
+import { sql } from '@/lib/db';
 import { stackServerApp } from '@/stack';
 
 // PATCH /api/beta/features/[id] - Update feature request (builder only for status/notes)
@@ -16,54 +16,56 @@ export async function PATCH(
       );
     }
 
-    const userResult = await query(
-      'SELECT id FROM users WHERE stack_user_id = $1',
-      [user.id]
-    );
+    const userResult = await sql`
+      SELECT id FROM users WHERE stack_user_id = ${user.id}
+    `;
 
-    if (userResult.rows.length === 0) {
+    if (userResult.length === 0) {
       return NextResponse.json(
         { success: false, error: 'User not found' },
         { status: 404 }
       );
     }
 
-    const dbUser = userResult.rows[0];
+    const dbUser = userResult[0];
     const { id } = await params;
     const body = await request.json();
 
     // Get feature with program info
-    const featureResult = await query(
-      `SELECT fr.*, bp.builder_id
-       FROM feature_requests fr
-       JOIN beta_programs bp ON fr.beta_program_id = bp.id
-       WHERE fr.id = $1`,
-      [id]
-    );
+    const featureResult = await sql`
+      SELECT fr.*, bp.builder_id
+      FROM feature_requests fr
+      JOIN beta_programs bp ON fr.beta_program_id = bp.id
+      WHERE fr.id = ${id}
+    `;
 
-    if (featureResult.rows.length === 0) {
+    if (featureResult.length === 0) {
       return NextResponse.json(
         { success: false, error: 'Feature request not found' },
         { status: 404 }
       );
     }
 
-    const feature = featureResult.rows[0];
+    const feature = featureResult[0];
     const isBuilder = feature.builder_id === dbUser.id;
     const isCreator = feature.created_by === dbUser.id;
 
-    const updates: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
+    if (!isBuilder && !isCreator) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 403 }
+      );
+    }
 
+    // Build update query dynamically
+    const updateFields: any = {};
+    
     // Builders can update status, priority, and notes
     if (isBuilder) {
       const builderFields = ['status', 'priority', 'builder_notes', 'estimated_date', 'shipped_date'];
       for (const field of builderFields) {
         if (body[field] !== undefined) {
-          updates.push(`${field} = $${paramIndex}`);
-          values.push(body[field]);
-          paramIndex++;
+          updateFields[field] = body[field];
         }
       }
     }
@@ -73,39 +75,55 @@ export async function PATCH(
       const creatorFields = ['title', 'description', 'category'];
       for (const field of creatorFields) {
         if (body[field] !== undefined) {
-          updates.push(`${field} = $${paramIndex}`);
-          values.push(body[field]);
-          paramIndex++;
+          updateFields[field] = body[field];
         }
       }
     }
 
-    if (!isBuilder && !isCreator) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 403 }
-      );
-    }
-
-    if (updates.length === 0) {
+    if (Object.keys(updateFields).length === 0) {
       return NextResponse.json(
         { success: false, error: 'No fields to update' },
         { status: 400 }
       );
     }
 
-    values.push(id);
-    const result = await query(
-      `UPDATE feature_requests 
-       SET ${updates.join(', ')} 
-       WHERE id = $${paramIndex}
-       RETURNING *`,
-      values
-    );
+    // Perform selective updates based on what fields are provided
+    let result;
+    if (updateFields.status !== undefined) {
+      result = await sql`
+        UPDATE feature_requests 
+        SET status = ${updateFields.status}, updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+    } else if (updateFields.title !== undefined) {
+      result = await sql`
+        UPDATE feature_requests 
+        SET title = ${updateFields.title}, 
+            description = ${updateFields.description || feature.description}, 
+            category = ${updateFields.category || feature.category},
+            updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+    } else {
+      // Update other fields
+      result = await sql`
+        UPDATE feature_requests 
+        SET 
+          priority = ${updateFields.priority || feature.priority},
+          builder_notes = ${updateFields.builder_notes || feature.builder_notes},
+          estimated_date = ${updateFields.estimated_date || feature.estimated_date},
+          shipped_date = ${updateFields.shipped_date || feature.shipped_date},
+          updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+    }
 
     return NextResponse.json({
       success: true,
-      feature: result.rows[0]
+      feature: result[0]
     });
 
   } catch (error) {
@@ -131,42 +149,40 @@ export async function DELETE(
       );
     }
 
-    const userResult = await query(
-      'SELECT id FROM users WHERE stack_user_id = $1',
-      [user.id]
-    );
+    const userResult = await sql`
+      SELECT id FROM users WHERE stack_user_id = ${user.id}
+    `;
 
-    if (userResult.rows.length === 0) {
+    if (userResult.length === 0) {
       return NextResponse.json(
         { success: false, error: 'User not found' },
         { status: 404 }
       );
     }
 
-    const dbUser = userResult.rows[0];
+    const dbUser = userResult[0];
     const { id } = await params;
 
     // Verify ownership
-    const featureResult = await query(
-      'SELECT created_by FROM feature_requests WHERE id = $1',
-      [id]
-    );
+    const featureResult = await sql`
+      SELECT created_by FROM feature_requests WHERE id = ${id}
+    `;
 
-    if (featureResult.rows.length === 0) {
+    if (featureResult.length === 0) {
       return NextResponse.json(
         { success: false, error: 'Feature request not found' },
         { status: 404 }
       );
     }
 
-    if (featureResult.rows[0].created_by !== dbUser.id) {
+    if (featureResult[0].created_by !== dbUser.id) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized' },
         { status: 403 }
       );
     }
 
-    await query('DELETE FROM feature_requests WHERE id = $1', [id]);
+    await sql`DELETE FROM feature_requests WHERE id = ${id}`;
 
     return NextResponse.json({
       success: true,
@@ -181,4 +197,3 @@ export async function DELETE(
     );
   }
 }
-

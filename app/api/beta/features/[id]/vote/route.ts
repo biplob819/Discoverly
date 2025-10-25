@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query } from '@/lib/db';
+import { sql } from '@/lib/db';
 import { stackServerApp } from '@/stack';
 import { POINTS_REWARDS } from '@/lib/constants';
 
@@ -17,19 +17,18 @@ export async function POST(
       );
     }
 
-    const userResult = await query(
-      'SELECT id FROM users WHERE stack_user_id = $1',
-      [user.id]
-    );
+    const userResult = await sql`
+      SELECT id FROM users WHERE stack_user_id = ${user.id}
+    `;
 
-    if (userResult.rows.length === 0) {
+    if (userResult.length === 0) {
       return NextResponse.json(
         { success: false, error: 'User not found' },
         { status: 404 }
       );
     }
 
-    const dbUser = userResult.rows[0];
+    const dbUser = userResult[0];
     const { id: feature_request_id } = await params;
     const body = await request.json();
     const { vote_type } = body; // 'upvote' or 'downvote'
@@ -42,95 +41,76 @@ export async function POST(
     }
 
     // Check if feature request exists
-    const featureResult = await query(
-      'SELECT id, beta_program_id FROM feature_requests WHERE id = $1',
-      [feature_request_id]
-    );
+    const featureResult = await sql`
+      SELECT id, beta_program_id FROM feature_requests WHERE id = ${feature_request_id}
+    `;
 
-    if (featureResult.rows.length === 0) {
+    if (featureResult.length === 0) {
       return NextResponse.json(
         { success: false, error: 'Feature request not found' },
         { status: 404 }
       );
     }
 
-    const feature = featureResult.rows[0];
+    const feature = featureResult[0];
 
-    // Start transaction
-    await query('BEGIN');
+    // Check if user has already voted
+    const existingVote = await sql`
+      SELECT id, vote_type FROM feature_votes 
+      WHERE feature_request_id = ${feature_request_id} AND user_id = ${dbUser.id}
+    `;
 
-    try {
-      // Check for existing vote
-      const existingVote = await query(
-        'SELECT id, vote_type FROM feature_votes WHERE feature_request_id = $1 AND user_id = $2',
-        [feature_request_id, dbUser.id]
-      );
-
-      if (existingVote.rows.length > 0) {
-        const currentVote = existingVote.rows[0];
-        
-        if (currentVote.vote_type === vote_type) {
-          // Remove vote (toggle off)
-          await query(
-            'DELETE FROM feature_votes WHERE id = $1',
-            [currentVote.id]
-          );
-          
-          await query('COMMIT');
-          
-          return NextResponse.json({
-            success: true,
-            action: 'removed',
-            message: 'Vote removed'
-          });
-        } else {
-          // Change vote
-          await query(
-            'UPDATE feature_votes SET vote_type = $1 WHERE id = $2',
-            [vote_type, currentVote.id]
-          );
-          
-          await query('COMMIT');
-          
-          return NextResponse.json({
-            success: true,
-            action: 'changed',
-            message: 'Vote changed'
-          });
-        }
-      } else {
-        // New vote
-        await query(
-          'INSERT INTO feature_votes (feature_request_id, user_id, vote_type) VALUES ($1, $2, $3)',
-          [feature_request_id, dbUser.id, vote_type]
-        );
-
-        // Award points for voting
-        await query(
-          `INSERT INTO tester_points (user_id, beta_program_id, action_type, points, description)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            dbUser.id,
-            feature.beta_program_id,
-            'feature_vote',
-            POINTS_REWARDS.FEATURE_VOTE,
-            'Voted on a feature request'
-          ]
-        );
-
-        await query('COMMIT');
+    if (existingVote.length > 0) {
+      const currentVote = existingVote[0];
+      if (currentVote.vote_type === vote_type) {
+        // Remove vote if clicking same type
+        await sql`
+          DELETE FROM feature_votes 
+          WHERE feature_request_id = ${feature_request_id} AND user_id = ${dbUser.id}
+        `;
 
         return NextResponse.json({
           success: true,
-          action: 'added',
-          message: 'Vote recorded',
-          points_earned: POINTS_REWARDS.FEATURE_VOTE
+          message: 'Vote removed',
+          vote: null
+        });
+      } else {
+        // Update vote type
+        await sql`
+          UPDATE feature_votes 
+          SET vote_type = ${vote_type}, updated_at = NOW()
+          WHERE feature_request_id = ${feature_request_id} AND user_id = ${dbUser.id}
+        `;
+
+        return NextResponse.json({
+          success: true,
+          message: 'Vote updated',
+          vote: { vote_type }
         });
       }
+    } else {
+      // Create new vote
+      await sql`
+        INSERT INTO feature_votes (feature_request_id, user_id, vote_type)
+        VALUES (${feature_request_id}, ${dbUser.id}, ${vote_type})
+      `;
 
-    } catch (error) {
-      await query('ROLLBACK');
-      throw error;
+      // Award points for voting
+      try {
+        await sql`
+          INSERT INTO user_points (user_id, points_earned, reason, beta_program_id)
+          VALUES (${dbUser.id}, ${POINTS_REWARDS.FEATURE_VOTE}, 'feature_vote', ${feature.beta_program_id})
+        `;
+      } catch (pointsError) {
+        console.error('Error awarding vote points:', pointsError);
+        // Continue even if points fail
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: 'Vote recorded',
+        vote: { vote_type }
+      });
     }
 
   } catch (error) {
@@ -156,37 +136,35 @@ export async function GET(
       });
     }
 
-    const userResult = await query(
-      'SELECT id FROM users WHERE stack_user_id = $1',
-      [user.id]
-    );
+    const userResult = await sql`
+      SELECT id FROM users WHERE stack_user_id = ${user.id}
+    `;
 
-    if (userResult.rows.length === 0) {
+    if (userResult.length === 0) {
       return NextResponse.json({
         success: true,
         vote: null
       });
     }
 
-    const dbUser = userResult.rows[0];
+    const dbUser = userResult[0];
     const { id: feature_request_id } = await params;
 
-    const result = await query(
-      'SELECT vote_type FROM feature_votes WHERE feature_request_id = $1 AND user_id = $2',
-      [feature_request_id, dbUser.id]
-    );
+    const voteResult = await sql`
+      SELECT vote_type FROM feature_votes 
+      WHERE feature_request_id = ${feature_request_id} AND user_id = ${dbUser.id}
+    `;
 
     return NextResponse.json({
       success: true,
-      vote: result.rows[0]?.vote_type || null
+      vote: voteResult.length > 0 ? { vote_type: voteResult[0].vote_type } : null
     });
 
   } catch (error) {
-    console.error('Error fetching vote:', error);
+    console.error('Error getting user vote:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch vote' },
+      { success: false, error: 'Failed to get user vote' },
       { status: 500 }
     );
   }
 }
-

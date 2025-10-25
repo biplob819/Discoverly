@@ -4,7 +4,7 @@ import { sql } from "@/lib/db";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const user = await stackServerApp.getUser();
@@ -12,7 +12,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const productId = params.id;
+    const productId = (await params).id;
 
     // Get user from database
     const dbUsers = await sql`
@@ -64,7 +64,7 @@ export async function GET(
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const user = await stackServerApp.getUser();
@@ -72,7 +72,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const productId = params.id;
+    const productId = (await params).id;
     const body = await request.json();
     const { betaTesterId, status } = body;
 

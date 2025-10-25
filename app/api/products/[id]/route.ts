@@ -31,7 +31,7 @@ export async function GET(
     const user = await stackServerApp.getUser();
     const userAgent = request.headers.get("user-agent");
     const forwarded = request.headers.get("x-forwarded-for");
-    const ip = forwarded ? forwarded.split(",")[0] : request.ip;
+    const ip = forwarded ? forwarded.split(",")[0] : request.headers.get("x-real-ip") || "unknown";
 
     await sql`
       INSERT INTO product_views (product_id, user_id, ip_address, user_agent)

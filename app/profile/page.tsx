@@ -300,7 +300,7 @@ export default function ProfilePage() {
   };
 
   const handleSignOut = async () => {
-    await stackApp.signOut();
+    await user.signOut();
     router.push("/");
   };
 

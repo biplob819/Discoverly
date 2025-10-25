@@ -9,7 +9,4 @@
       "maxDuration": 30
     }
   },
-  "env": {
-    "NEXT_PUBLIC_BASE_URL": "@vercel_url"
-  }
 }
